@@ -1,0 +1,26 @@
+{
+  "name": "bigdata-test-tool",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "serve": "vue-cli-service serve",
+    "build": "vue-cli-service build"
+  },
+  "dependencies": {
+    "element-ui": "^2.15.14",
+    "vue": "^2.7.14",
+    "vue-router": "^3.6.5",
+    "vuex": "^3.6.2",
+    "x-data-spreadsheet": "^1.1.9",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@vue/cli-plugin-babel": "^5.0.8",
+    "@vue/cli-service": "^5.0.8",
+    "less": "^4.1.3",
+    "less-loader": "^7.3.0",
+    "sass": "^1.56.0",
+    "sass-loader": "^13.3.2",
+    "vue-template-compiler": "^2.7.14"
+  }
+}

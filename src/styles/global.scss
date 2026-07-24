@@ -1,0 +1,180 @@
+@import "./variables.scss";
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans SC", sans-serif;
+  background: $color-bg-base; color: $color-text-primary; -webkit-font-smoothing: antialiased;
+  font-size: 14px; line-height: 1.5;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: $slate-300; border-radius: 3px; &:hover { background: $slate-400; } }
+
+// ══════════════════════════════════
+// ElementUI Overrides
+// ══════════════════════════════════
+
+.el-table {
+  border: 1px solid $color-border; border-radius: $radius-lg; overflow: hidden;
+  th.el-table__cell { background: #fafbfd !important; color: $color-text-secondary; font-weight: 600; font-size: 12px; padding: 10px 12px; border-bottom: 1px solid $color-border; }
+  td.el-table__cell { padding: 10px 12px; font-size: 13px; }
+  .el-table__body tr:hover > td { background-color: $color-brand-subtle !important; }
+  &::before { display: none; }
+  &.el-table--striped .el-table__body tr.el-table__row--striped td { background: #fafbfd; }
+}
+
+.el-card {
+  border: 1px solid $color-border; border-radius: $radius-lg;
+  box-shadow: $shadow-card; transition: box-shadow 0.25s ease, border-color 0.25s ease;
+  &:hover { border-color: rgba($color-brand, 0.12); }
+  .el-card__header {
+    border-bottom: 1px solid $color-border; padding: 14px 20px; font-weight: 600; font-size: 14px;
+    background: #fff; color: $color-text-primary;
+  }
+  .el-card__body { padding: 20px; }
+}
+
+.el-dialog {
+  border-radius: $radius-xl; box-shadow: $shadow-dropdown;
+  .el-dialog__header { padding: 20px 24px 16px; border-bottom: 1px solid $color-border; }
+  .el-dialog__title { font-weight: 600; font-size: 16px; }
+  .el-dialog__body { padding: 24px; }
+  .el-dialog__footer { padding: 12px 24px 20px; }
+}
+
+.el-form-item__label { font-weight: 500; font-size: 13px; color: $color-text-secondary; padding-bottom: 4px; }
+.el-input__inner, .el-textarea__inner {
+  border-color: $color-border-input; border-radius: $radius-md; transition: all 0.2s ease;
+  font-size: 13px; padding: 8px 12px;
+  &:hover { border-color: $slate-400; }
+  &:focus { border-color: $color-brand; box-shadow: 0 0 0 3px rgba($color-brand, 0.1); }
+}
+.el-select .el-input__inner { border-color: $color-border-input; }
+.el-select .el-input.is-focus .el-input__inner { border-color: $color-brand; box-shadow: 0 0 0 3px rgba($color-brand, 0.1); }
+
+.el-button {
+  font-weight: 500; font-size: 13px; border-radius: $radius-md; padding: 8px 18px; transition: all 0.2s ease;
+  &--primary {
+    background: $gradient-primary; border: none; box-shadow: 0 2px 8px rgba($color-brand, 0.25);
+    &:hover { background: linear-gradient(135deg, $purple-600, $purple-700); box-shadow: 0 4px 14px rgba($color-brand, 0.35); transform: translateY(-1px); }
+    &:active { transform: translateY(0); box-shadow: 0 1px 4px rgba($color-brand, 0.2); }
+  }
+  &--default {
+    border-color: $slate-300; color: $color-text-secondary;
+    &:hover { color: $color-brand; border-color: $color-brand-lighter; background: $color-brand-subtle; }
+  }
+  &--text { color: $color-brand; font-weight: 500; &:hover { color: $color-brand-dark; background: $color-brand-subtle; } }
+  &--success { background: $color-success; border-color: $color-success; }
+  &--small { padding: 5px 14px; font-size: 12px; }
+  &--mini { padding: 3px 10px; font-size: 12px; }
+}
+.el-button + .el-button { margin-left: 8px; }
+
+.el-tag { border-radius: $radius-sm; border: none; font-weight: 500; font-size: 12px; padding: 2px 8px; }
+.el-tag--small { padding: 0 6px; font-size: 11px; line-height: 16px; }
+
+.el-tabs__item { font-weight: 500; font-size: 14px; color: $color-text-secondary; padding: 0 20px; transition: color 0.2s;
+  &.is-active { color: $color-brand; font-weight: 600; }
+  &:hover { color: $color-brand; }
+}
+.el-tabs__active-bar { background: $gradient-primary; height: 2px; }
+.el-tabs__nav-wrap::after { height: 1px; background: $color-border; }
+
+.el-steps { margin-bottom: $space-lg; }
+.el-step__title { font-size: 13px; }
+
+.el-breadcrumb { font-size: 13px;
+  .el-breadcrumb__inner { color: $color-text-muted; &.is-link:hover { color: $color-brand; } }
+  .el-breadcrumb__item:last-child .el-breadcrumb__inner { color: $color-text-secondary; font-weight: 500; }
+}
+
+.el-collapse { border: none;
+  .el-collapse-item__header { font-weight: 500; font-size: 14px; }
+  .el-collapse-item__wrap { border-bottom: 1px solid $color-border; }
+}
+
+.el-progress-bar__outer { border-radius: 6px; background: $slate-100; }
+
+.el-radio-button__inner { border-color: $color-border-input; font-size: 12px; padding: 6px 14px; }
+.el-radio-button:first-child .el-radio-button__inner { border-left-color: $color-border-input; }
+
+.el-select-dropdown__item { font-size: 13px; }
+.el-select-dropdown__item.selected { color: $color-brand; font-weight: 600; }
+.el-select-dropdown__item.hover { background: $color-brand-subtle; }
+
+// ══════════════════════════════════
+// Page helpers
+// ══════════════════════════════════
+.page-container { padding: 28px 32px; max-width: 1440px; }
+
+.page-header {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;
+  position: relative;
+  .page-title-wrap { display: flex; align-items: center; gap: 12px; }
+  .page-illustration { flex-shrink: 0; animation: float 3s ease-in-out infinite; }
+  .page-title { font-size: 22px; font-weight: 700; color: $color-text-primary; letter-spacing: -0.4px; background: linear-gradient(135deg, $purple-700, $purple-500); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+.section-card { margin-bottom: 20px; }
+
+.filter-bar {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px;
+  padding: 14px 20px; background: $color-bg-elevated; border: 1px solid $color-border; border-radius: $radius-lg;
+  box-shadow: $shadow-card;
+  .el-form-item { margin-bottom: 0; }
+}
+
+.table-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+
+// ── Status badge ──
+.status-badge { display: inline-flex; align-items: center; gap: 5px; font-weight: 500; font-size: 13px;
+  &::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
+  &.pass::before { background: $color-success; }
+  &.fail::before { background: $color-danger; }
+  &.running::before { background: $color-warning; }
+  &.draft::before { background: $color-text-muted; }
+  &.confirmed::before { background: $color-brand; }
+}
+
+// ── Info grid ──
+.info-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1px;
+  background: $color-border; border: 1px solid $color-border; border-radius: $radius-lg; overflow: hidden;
+  .info-item {
+    padding: 14px 16px; background: #fff; display: flex; flex-direction: column; gap: 6px;
+    .label { font-size: 11px; color: $color-text-muted; font-weight: 500; letter-spacing: 0.3px; }
+    .value { font-size: 14px; font-weight: 600; color: $color-text-primary; }
+  }
+}
+
+// ── Action column: keep buttons inline, no overflow ──
+.el-table .el-table__fixed-right .el-table__fixed-body-wrapper .cell,
+.el-table td.el-table__cell .cell {
+  white-space: nowrap; overflow: visible; text-overflow: clip;
+  .el-button { margin-left: 0; margin-right: 0; }
+  .el-button + .el-button { margin-left: 2px; }
+}
+
+// ── Empty state ──
+.el-empty { padding: 60px 0; .el-empty__description { color: $color-text-muted; } }
+
+// ── Dashboard hero decoration ──
+.hero-decoration {
+  position: absolute; top: -40px; right: -20px; width: 240px; height: 240px; pointer-events: none; opacity: 0.06;
+  background: radial-gradient(circle at 60% 40%, $color-brand, transparent 70%);
+}
+
+// ── Entrance animation ──
+.fade-in { animation: fadeIn 0.4s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+// ── Card entrance stagger ──
+.section-card { animation: fadeIn 0.4s ease; }
+.section-card:nth-child(2) { animation-delay: 0.05s; }
+.section-card:nth-child(3) { animation-delay: 0.1s; }
