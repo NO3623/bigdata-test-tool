@@ -3,3 +3,6 @@ dist/
 .DS_Store
 *.log
 .serve.log
+server/uploads/
+server/outputs/
+public/ffmpeg-core/

@@ -16,7 +16,8 @@ const routes = [
       { path: "assets/metadata-profile", name: "MetadataProfile", meta: { title: "元数据画像" }, component: () => import("@/views/assets/MetadataProfile.vue") },
       { path: "design", name: "TestDesign", meta: { title: "测试设计" }, component: () => import("@/views/design/TestDesign.vue") },
       { path: "execution", name: "TestExecution", meta: { title: "测试执行" }, component: () => import("@/views/execution/TestExecution.vue") },
-      { path: "report", name: "TestReport", meta: { title: "测试报告" }, component: () => import("@/views/report/TestReport.vue") }
+      { path: "report", name: "TestReport", meta: { title: "测试报告" }, component: () => import("@/views/report/TestReport.vue") },
+      { path: "tool/video-compress", name: "VideoCompressor", meta: { title: "视频批量压缩" }, component: () => import("@/views/tool/VideoCompressor.vue") }
     ]
   }
 ]

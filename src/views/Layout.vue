@@ -24,6 +24,7 @@
         <el-menu-item index="/design"><i class="el-icon-edit-outline" /><span slot="title">测试设计</span></el-menu-item>
         <el-menu-item index="/execution"><i class="el-icon-video-play" /><span slot="title">测试执行</span></el-menu-item>
         <el-menu-item index="/report"><i class="el-icon-data-line" /><span slot="title">测试报告</span></el-menu-item>
+        <el-menu-item index="/tool/video-compress"><i class="el-icon-video-camera" /><span slot="title">视频批量压缩</span></el-menu-item>
       </el-menu>
       <div v-if="!sidebarCollapsed" class="sidebar-footer">
         <div class="sidebar-footer-text">Big Data Test v1.0</div>
