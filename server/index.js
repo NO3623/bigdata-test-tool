@@ -15,6 +15,31 @@ for (const dir of [UPLOAD_DIR, OUTPUT_DIR, JOBS_DIR]) {
   fs.mkdirSync(dir, { recursive: true })
 }
 
+// 启动清扫：上次运行中断的任务（进程已不在，永远不会完成）标记为失败，
+// 并清理遗留的临时输入文件与已无任务记录对应的输出文件
+const keptOutputs = new Set()
+for (const f of fs.readdirSync(JOBS_DIR).filter((f) => f.endsWith(".json"))) {
+  const p = path.join(JOBS_DIR, f)
+  try {
+    const job = JSON.parse(fs.readFileSync(p))
+    if (job && (job.status === "running" || job.status === "queued")) {
+      job.status = "failed"
+      job.progress = 0
+      job.error = "服务重启导致任务中断，请重新压缩"
+      fs.writeFileSync(p, JSON.stringify(job))
+    }
+    if (job && job.outName) keptOutputs.add(job.outName)
+  } catch { /* 任务文件损坏时跳过 */ }
+}
+for (const f of fs.readdirSync(UPLOAD_DIR)) {
+  try { fs.unlinkSync(path.join(UPLOAD_DIR, f)) } catch { /* noop */ }
+}
+for (const f of fs.readdirSync(OUTPUT_DIR)) {
+  if (!keptOutputs.has(f)) {
+    try { fs.unlinkSync(path.join(OUTPUT_DIR, f)) } catch { /* noop */ }
+  }
+}
+
 app.use(cors())
 app.use(express.json())
 
@@ -103,7 +128,12 @@ function ffprobe(file) {
 }
 
 function setJob(id, data) {
-  fs.writeFileSync(path.join(JOBS_DIR, `${id}.json`), JSON.stringify(data))
+  // 合并写入：编码过程中多次更新进度，必须保留 originalName/originalSize/outName 等字段，
+  // 否则页面刷新后无法按原文件名恢复任务
+  const f = path.join(JOBS_DIR, `${id}.json`)
+  let prev = {}
+  try { prev = JSON.parse(fs.readFileSync(f)) } catch { prev = {} }
+  fs.writeFileSync(f, JSON.stringify({ ...prev, ...data }))
 }
 function getJob(id) {
   const f = path.join(JOBS_DIR, `${id}.json`)
@@ -112,6 +142,47 @@ function getJob(id) {
 function removeJob(id) {
   const f = path.join(JOBS_DIR, `${id}.json`)
   if (fs.existsSync(f)) fs.unlinkSync(f)
+}
+
+// 串行编码队列：所有任务先入队，逐个执行，避免多个 ffmpeg 抢占 CPU；
+// 页面刷新不影响服务端继续编码，客户端重连后靠任务记录恢复进度
+const jobQueue = []
+let activeJobId = null
+let activeProc = null
+
+function enqueueJob(entry) {
+  jobQueue.push(entry)
+  pump()
+}
+
+function pump() {
+  if (activeJobId || jobQueue.length === 0) return
+  const next = jobQueue.shift()
+  activeJobId = next.jobId
+  processJob(next.jobId, next.inPath, next.outPath, next.opts, () => {
+    activeJobId = null
+    setImmediate(pump)
+  })
+}
+
+// 取消任务：排队中的直接移出队列并删输入文件；编码中的杀掉 ffmpeg 进程。
+// 返回 true 表示该任务确实处于排队/编码状态
+function cancelJob(id) {
+  let hit = false
+  const qi = jobQueue.findIndex((q) => q.jobId === id)
+  if (qi > -1) {
+    const [entry] = jobQueue.splice(qi, 1)
+    cleanup(entry.inPath)
+    setJob(id, { status: "cancelled" })
+    hit = true
+  }
+  if (activeJobId === id && activeProc) {
+    // 先写状态再杀进程，processJob 的 close 回调看到 cancelled 后不会覆盖成 failed
+    setJob(id, { status: "cancelled" })
+    activeProc.kill("SIGKILL")
+    hit = true
+  }
+  return hit
 }
 
 app.get("/api/jobs", (_req, res) => {
@@ -165,16 +236,17 @@ app.post("/api/compress", upload.single("video"), (req, res) => {
     const outPath = path.join(OUTPUT_DIR, outName)
     setJob(jobId, { status: "queued", progress: 0, targetMB, mode, ratioLevel, resolutionCap, precise, outName, originalName, originalSize: file.size })
     res.json({ jobId })
-    setImmediate(() => processJob(jobId, file.path, outPath, { targetMB, mode, ratioLevel, resolutionCap, precise, outName }))
+    setImmediate(() => enqueueJob({ jobId, inPath: file.path, outPath, opts: { targetMB, mode, ratioLevel, resolutionCap, precise, outName } }))
   })
 })
 
-function processJob(jobId, inPath, outPath, opts) {
+function processJob(jobId, inPath, outPath, opts, done) {
   const { targetMB, mode, ratioLevel, resolutionCap, precise, outName } = opts
   ffprobe(inPath)
     .then((meta) => {
+      if ((getJob(jobId) || {}).status === "cancelled") { cleanup(inPath); done(); return }
       const dur = meta.duration
-      if (!dur || dur <= 0) { cleanup(inPath); setJob(jobId, { status: "failed", error: "无法识别视频时长" }); return }
+      if (!dur || dur <= 0) { cleanup(inPath); setJob(jobId, { status: "failed", error: "无法识别视频时长" }); done(); return }
       const effH = meta.height
       let vf = ""
       if (resolutionCap && effH > resolutionCap) vf = `scale=-2:${resolutionCap}`
@@ -190,9 +262,10 @@ function processJob(jobId, inPath, outPath, opts) {
         ? [...base, ...videoOpts, "-pass", "1", "-an", "-f", "mp4", path.join(UPLOAD_DIR, `p1_${jobId}.mp4`), ...base, ...videoOpts, "-pass", "2", ...audioOpts, "-movflags", "+faststart", "-f", "mp4", outPath]
         : [...base, ...videoOpts, ...audioOpts, "-movflags", "+faststart", "-f", "mp4", outPath]
       const ffmpegExe = FFMPEG_PATHS.find((p) => p) || "ffmpeg"
-      setJob(jobId, { status: "running", progress: 0, targetMB, videoKbps, audioKbps, duration: dur, width: meta.width, height: meta.height })
+      setJob(jobId, { status: "running", progress: 0, videoKbps, audioKbps, duration: dur, width: meta.width, height: meta.height, hasAudio: meta.hasAudio })
       let stderr = ""
       const p = spawn(ffmpegExe, args, { stdio: ["ignore", "pipe", "pipe"] })
+      activeProc = p
       p.stderr.on("data", (data) => {
         stderr += data.toString()
         const txt = data.toString()
@@ -200,24 +273,33 @@ function processJob(jobId, inPath, outPath, opts) {
         if (m && dur > 0) {
           const t = parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseFloat(m[3])
           const prog = Math.min(99, Math.max(1, Math.round((t / dur) * 100)))
-          setJob(jobId, { ...getJob(jobId), progress: prog })
+          setJob(jobId, { progress: prog })
         }
       })
       p.on("close", (code) => {
+        activeProc = null
         const pass1 = path.join(UPLOAD_DIR, `p1_${jobId}.mp4`)
         if (fs.existsSync(pass1)) fs.unlinkSync(pass1)
         cleanup(inPath)
+        if ((getJob(jobId) || {}).status === "cancelled") { done(); return }
         if (code !== 0) {
           const tail = stderr.slice(-300).replace(/\r?\n/g, " ")
           setJob(jobId, { status: "failed", progress: 0, error: `ffmpeg 退出码 ${code}: ${tail}` })
+          done()
           return
         }
         const outSize = fs.existsSync(outPath) ? fs.statSync(outPath).size : 0
         setJob(jobId, { status: "done", progress: 100, outName, outSize })
+        done()
       })
-      p.on("error", (e) => { cleanup(inPath); setJob(jobId, { status: "failed", error: e.message }) })
+      p.on("error", (e) => {
+        activeProc = null
+        cleanup(inPath)
+        setJob(jobId, { status: "failed", error: e.message })
+        done()
+      })
     })
-    .catch((e) => { cleanup(inPath); setJob(jobId, { status: "failed", error: e.message }) })
+    .catch((e) => { cleanup(inPath); setJob(jobId, { status: "failed", error: e.message }); done() })
 }
 
 app.get("/api/progress/:id", (req, res) => {
@@ -232,17 +314,26 @@ app.get("/api/download/:id", (req, res) => {
   const file = path.join(OUTPUT_DIR, job.outName)
   if (!fs.existsSync(file)) return res.status(404).json({ error: "文件不存在" })
   const originalName = job.originalName || "video.mp4"
-  const downloadName = originalName
-  res.download(file, downloadName, () => {
-    setTimeout(() => cleanup(file), 60000)
-  })
+  // 输出文件保留，供刷新页面后再次下载；清理统一由 DELETE /api/jobs/:id 处理
+  res.download(file, originalName)
+})
+
+app.post("/api/cancel/:id", (req, res) => {
+  const job = getJob(req.params.id)
+  if (job) cancelJob(req.params.id)
+  res.json({ ok: true })
 })
 
 app.delete("/api/jobs/:id", (req, res) => {
   const job = getJob(req.params.id)
   if (job) {
-    const out = path.join(OUTPUT_DIR, job.outName)
-    if (fs.existsSync(out)) fs.unlinkSync(out)
+    // 仍在排队/编码中的任务先取消（杀进程、移出队列、删输入文件）
+    cancelJob(req.params.id)
+    // 历史任务记录可能缺失 outName（旧版本覆盖写入导致），缺省时不能让 path.join 崩掉
+    if (job.outName) {
+      const out = path.join(OUTPUT_DIR, job.outName)
+      if (fs.existsSync(out)) fs.unlinkSync(out)
+    }
     removeJob(req.params.id)
   }
   res.json({ ok: true })

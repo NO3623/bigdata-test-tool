@@ -138,7 +138,10 @@
           </el-table-column>
           <el-table-column label="状态 / 进度" min-width="230">
             <template slot-scope="{ row }">
-              <div v-if="row.status === 'running'" class="state-running">
+              <div v-if="row.status === 'uploading'" class="state-running">
+                <el-tag size="small" type="warning">上传中…</el-tag>
+              </div>
+              <div v-else-if="row.status === 'running'" class="state-running">
                 <el-progress :percentage="row.progress" :stroke-width="8" style="flex:1" />
                 <span class="phase-text">{{ row.phase }}</span>
               </div>
@@ -160,6 +163,10 @@
               <div v-else-if="row.status === 'cancelled'">
                 <el-tag type="warning" size="small">已停止</el-tag>
               </div>
+              <div v-else-if="row.status === 'lost'" class="fail-cell">
+                <el-tag type="warning" size="small">文件丢失</el-tag>
+                <span class="err-text">刷新后文件引用丢失，请重新选择</span>
+              </div>
               <div v-else>
                 <el-tag size="small" type="info" effect="plain">等待处理</el-tag>
               </div>
@@ -169,13 +176,14 @@
             <template slot-scope="{ row }">
               <el-button v-if="row.status === 'done'" type="text" size="mini" @click="preview(row)">预览</el-button>
               <el-button v-if="row.status === 'done'" type="text" size="mini" @click="download(row)">下载</el-button>
+              <el-button v-if="row.status === 'lost'" type="text" size="mini" @click="refileRow(row)">重新选择文件</el-button>
               <el-button v-if="['failed', 'cancelled', 'idle', 'queued'].includes(row.status)" type="text" size="mini" @click="retryRow(row)">重试</el-button>
-              <el-button v-if="['idle', 'queued', 'failed', 'cancelled', 'skipped'].includes(row.status)" type="text" size="mini" class="danger-link" @click="removeRow(row)">移除</el-button>
+              <el-button v-if="['idle', 'queued', 'failed', 'cancelled', 'skipped', 'lost'].includes(row.status)" type="text" size="mini" class="danger-link" @click="removeRow(row)">移除</el-button>
             </template>
           </el-table-column>
         </el-table>
       </div>
-      <div v-else class="upload-zone" @click="picker && picker.click()">
+      <div v-else class="upload-zone" @click="picker && picker.click()" @drop.prevent="handleDrop" @dragover.prevent>
         <input ref="picker" type="file" multiple accept="video/*" class="file-picker" @change="handleNativeFiles" />
         <i class="upload-icon el-icon-upload2" />
         <p class="upload-main">拖拽视频到此处，或点击选择</p>
@@ -190,7 +198,9 @@
 </template>
 
 <script>
-import { compress, probe, downloadJob, removeJob, checkFfmpeg, listJobs, fmtBytes, isVideoType } from "@/utils/video/compressClient"
+import { compressUpload, cancelJob, downloadJob, removeJob, checkFfmpeg, listJobs, getProgress, fmtBytes, isVideoType } from "@/utils/video/compressClient"
+
+const QUEUE_STORAGE_KEY = "video-compressor-queue"
 
 const RATIO_PRESETS = [
   { label: "高压缩", value: 0.2, hint: "20%" },
@@ -215,7 +225,10 @@ export default {
         customMB: 20,
         resolutionCap: 0,
         precise: false
-      }
+      },
+      previewRow: null,
+      previewVisible: false,
+      previewUrl: ""
     }
   },
   computed: {
@@ -235,6 +248,7 @@ export default {
   },
   created() {
     this._checkServer()
+    this._restoreQueue()
     this._loadJobs()
   },
   beforeDestroy() {
@@ -258,28 +272,154 @@ export default {
       try {
         const jobs = await listJobs()
         for (const job of jobs) {
-          if (this.rows.some((r) => r.id === job.id)) continue
-          this.rows.push({
+          if (this.rows.some((r) => r.jobId === job.id)) continue
+          const status = this._jobStatusOf(job)
+          const patch = {
+            jobId: job.id,
+            status,
+            targetMB: job.targetMB || 0,
+            outSize: job.outSize || 0,
+            outName: job.outName || "",
+            meta: job.duration ? { duration: job.duration, width: job.width, height: job.height, hasAudio: !!job.hasAudio } : null,
+            savedRatio: job.originalSize && job.outSize ? Math.round((1 - job.outSize / job.originalSize) * 100) : 0
+          }
+          // 优先按“文件名+大小”升级已恢复的 lost 行，避免同一文件出现两行
+          const idx = this.rows.findIndex((r) => !r.jobId && r.status === "lost" && r.name === job.originalName && (job.originalSize || 0) === (r.size || 0))
+          const row = idx > -1 ? this.rows[idx] : {
             id: job.id,
             file: null,
             name: job.originalName || job.outName || "video.mp4",
             size: job.originalSize || 0,
             lastModified: 0,
-            status: job.status === "done" ? "done" : job.status === "failed" ? "failed" : "idle",
+            status: "running",
             progress: job.progress || 0,
             phase: "",
             note: "",
             err: job.error || "",
-            meta: job.duration ? { duration: job.duration, width: job.width, height: job.height } : null,
-            targetMB: job.targetMB || 0,
+            meta: null,
+            targetMB: 0,
             blob: null,
-            outSize: job.outSize || 0,
-            outName: job.outName || "",
+            outSize: 0,
+            outName: "",
             jobId: job.id,
-            savedRatio: job.originalSize && job.outSize ? Math.round((1 - job.outSize / job.originalSize) * 100) : 0
-          })
+            savedRatio: 0
+          }
+          Object.assign(row, patch)
+          if (idx === -1) this.rows.push(row)
+          if (row.status === "running" || row.status === "queued") this._watchJob(row)
         }
       } catch {}
+      this._saveQueue()
+    },
+    _jobStatusOf(job) {
+      if (job.status === "done") return "done"
+      if (job.status === "failed") return "failed"
+      if (job.status === "cancelled") return "cancelled"
+      if (job.status === "queued") return "queued"
+      return "running"
+    },
+    _restoreQueue() {
+      let saved = []
+      try {
+        saved = JSON.parse(localStorage.getItem(QUEUE_STORAGE_KEY) || "[]")
+      } catch {
+        saved = []
+      }
+      if (!Array.isArray(saved)) return
+      for (const s of saved) {
+        if (!s || !s.name || s.jobId) continue // 有后端任务记录的行由 _loadJobs 恢复
+        this.rows.push({
+          id: s.id || Date.now() + Math.random(),
+          file: null,
+          name: s.name,
+          size: s.size || 0,
+          lastModified: s.lastModified || 0,
+          status: "lost",
+          progress: 0,
+          phase: "",
+          note: "页面刷新后文件引用丢失，请重新选择文件",
+          err: "",
+          meta: null,
+          targetMB: s.targetMB || 0,
+          blob: null,
+          outSize: 0,
+          outName: "",
+          jobId: ""
+        })
+      }
+    },
+    _saveQueue() {
+      try {
+        const data = this.rows.map((r) => ({
+          id: r.id,
+          name: r.name,
+          size: r.size,
+          lastModified: r.lastModified,
+          status: r.status,
+          targetMB: r.targetMB || 0,
+          outSize: r.outSize || 0,
+          outName: r.outName || "",
+          jobId: r.jobId || ""
+        }))
+        localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(data))
+      } catch { /* 存储不可用时静默降级 */ }
+    },
+    _watchJob(row) {
+      if (!row.jobId) return Promise.resolve()
+      if (row._watchPromise) return row._watchPromise
+      row._watchPromise = new Promise((resolve) => {
+        // 连续拉取失败达到阈值才判定失败：短暂的服务重启不应把行打成"状态获取失败"，
+        // 服务恢复后轮询会拿到清扫后的真实任务状态（如"服务重启导致任务中断"）
+        let failures = 0
+        const timer = setInterval(async () => {
+          let j
+          try {
+            j = await getProgress(row.jobId)
+            failures = 0
+          } catch {
+            failures++
+            if (failures < 10) return
+            clearInterval(timer)
+            row.status = "failed"
+            row.err = "任务状态获取失败"
+            this._saveQueue()
+            resolve()
+            return
+          }
+          if (j.status === "done") {
+            clearInterval(timer)
+            row.status = "done"
+            row.progress = 100
+            row.outSize = j.outSize || 0
+            row.outName = j.outName || ""
+            if (!row.size && j.originalSize) row.size = j.originalSize
+            row.savedRatio = row.size && row.outSize ? Math.round((1 - row.outSize / row.size) * 100) : 0
+            this.$message.success(`${row.name} 压缩完成`)
+            resolve()
+          } else if (j.status === "failed") {
+            clearInterval(timer)
+            row.status = "failed"
+            row.err = j.error || "编码失败"
+            resolve()
+          } else if (j.status === "cancelled") {
+            clearInterval(timer)
+            row.status = "cancelled"
+            resolve()
+          } else if (j.status === "queued" || j.status === "running") {
+            row.status = j.status === "queued" ? "queued" : "running"
+            if (typeof j.progress === "number") row.progress = j.progress
+            if (!row.meta && j.duration) row.meta = { duration: j.duration, width: j.width, height: j.height, hasAudio: !!j.hasAudio }
+            if (!row.size && j.originalSize) row.size = j.originalSize
+          } else {
+            // 任务记录不存在（被清理或服务端已重置），终止轮询而不是永远停在 running
+            clearInterval(timer)
+            row.status = "failed"
+            row.err = j.error || "任务不存在"
+          }
+          this._saveQueue()
+        }, 600)
+      })
+      return row._watchPromise
     },
     handleNativeFiles(e) {
       this.addFiles(Array.from(e.target.files || []))
@@ -321,20 +461,53 @@ export default {
       }
       if (added.length) this.$message.success(`已添加 ${added.length} 个视频`)
       else if (files.length) this.$message.warning("没有可添加的视频文件")
+      this._saveQueue()
+    },
+    refileRow(row) {
+      const input = document.createElement("input")
+      input.type = "file"
+      input.accept = "video/*"
+      input.onchange = () => {
+        const f = input.files && input.files[0]
+        if (!f) return
+        row.file = f
+        row.name = f.name
+        row.size = f.size
+        row.lastModified = f.lastModified || 0
+        row.status = "idle"
+        row.progress = 0
+        row.note = ""
+        row.err = ""
+        this._saveQueue()
+        this.$message.success(`已重新选择 ${f.name}，可继续压缩`)
+      }
+      input.click()
     },
     removeRow(row) {
       const idx = this.rows.indexOf(row)
       if (idx > -1) this.rows.splice(idx, 1)
       if (row.blob) row.blob = null
+      if (row.jobId) removeJob(row.jobId).catch(() => {})
+      this._saveQueue()
     },
     resetAll() {
       if (this.running) return
+      for (const r of this.rows) {
+        if (r.jobId) removeJob(r.jobId).catch(() => {})
+      }
       this.rows = []
       this.batchPercent = 0
+      try {
+        localStorage.removeItem(QUEUE_STORAGE_KEY)
+      } catch { /* noop */ }
       this.serverOk = false
       this._checkServer()
     },
     retryRow(row) {
+      if (!row.file) {
+        this.$message.warning("文件引用已丢失，请先重新选择文件")
+        return
+      }
       row.status = "queued"
       row.progress = 0
       row.phase = ""
@@ -343,7 +516,20 @@ export default {
       row.meta = null
       row.blob = null
       row.outSize = 0
+      row.jobId = ""
+      row._watchPromise = null
+      this._saveQueue()
       if (!this.running) this.start()
+    },
+    stopCompress() {
+      this.cancelRequested = true
+      // 通知服务端取消排队/编码中的任务（杀掉 ffmpeg），而不是只在页面侧停止轮询
+      for (const r of this.rows) {
+        if (r.jobId && !["done", "failed", "cancelled"].includes(r.status)) {
+          cancelJob(r.jobId).catch(() => {})
+        }
+      }
+      this.$message.warning("已停止，正在中止任务")
     },
     targetMbOf(row) {
       if (this.settings.mode === "custom") return Math.round(this.settings.customMB * 100) / 100
@@ -365,6 +551,9 @@ export default {
       this.cancelRequested = false
       this.running = true
       this.batchPercent = 0
+
+      let skip = 0
+      const runnable = []
       for (const r of targets) {
         r.status = "queued"
         r.progress = 0
@@ -374,88 +563,86 @@ export default {
         r.meta = null
         r.blob = null
         r.outSize = 0
-      }
-      let done = 0, skip = 0, fail = 0
-      const queue = targets.slice()
-      for (const row of queue) {
-        if (this.cancelRequested) {
-          row.status = "cancelled"
+        r.jobId = ""
+        r._watchPromise = null
+        if (!r.file) {
+          // 刷新后文件引用丢失的行：留在列表里等待重新选择，不参与本轮压缩
+          r.status = "lost"
+          r.note = "页面刷新后文件引用丢失，请重新选择文件"
           continue
         }
-        row.status = "running"
+        r.targetMB = this.targetMbOf(r)
+        if (this.settings.mode === "custom" && r.size <= r.targetMB * 1048576) {
+          r.status = "skipped"
+          r.note = "原文件未超过目标大小"
+          skip++
+          continue
+        }
+        runnable.push(r)
+      }
+      this._saveQueue()
+
+      // 阶段一：把所有待处理文件依次上传到本地服务排队（服务端串行编码）。
+      // 每拿到一个 jobId 立即持久化，此后任意时刻刷新都能从服务端恢复该行状态
+      for (let i = 0; i < runnable.length; i++) {
+        if (this.cancelRequested) break
+        const row = runnable[i]
+        this.batchPercent = Math.round((i / Math.max(runnable.length, 1)) * 40)
+        row.status = "uploading"
+        this._saveQueue()
         try {
-          row.targetMB = this.targetMbOf(row)
-          if (this.settings.mode === "custom" && row.size <= row.targetMB * 1048576) {
-            row.status = "skipped"
-            row.note = "原文件未超过目标大小"
-            skip++
-            continue
-          }
-          row.meta = await probe(row.file)
-          if (!row.meta || !row.meta.duration || row.meta.duration <= 0) {
-            throw new Error("无法识别视频时长")
-          }
-          const plan = this.buildPlan(row)
-          if (plan.undersized) row.note = "目标过小，实际输出可能仍大于目标体积"
-          const result = await compress(row.file, {
+          await compressUpload(row.file, {
             targetMB: row.targetMB,
             mode: this.settings.mode,
             ratioLevel: this.settings.ratioLevel,
             resolutionCap: this.settings.resolutionCap,
             precise: this.settings.precise
           }, {
-            onProgress: (p) => {
-              row.progress = Math.round(p)
+            onSubmitted: (jobId) => {
+              row.jobId = jobId
+              row.status = "queued"
+              this._saveQueue()
             }
           })
-          row.blob = await downloadJob(result.jobId)
-          row.jobId = result.jobId
-          row.outSize = result.outSize || row.blob.size
-          row.outName = result.outName || `${result.jobId}.mp4`
-          row.savedRatio = Math.round((1 - row.outSize / row.size) * 100)
-          row.status = "done"
-          row.progress = 100
-          done++
-          this.$message.success(`${row.name} 完成：${fmtBytes(row.size)} → ${fmtBytes(row.outSize)}`)
         } catch (e) {
-          const cancelled = this.cancelRequested || /cancelled|已释放/i.test(e.message || "")
-          row.status = cancelled ? "cancelled" : "failed"
-          row.err = e.message || "未知错误"
+          row.status = this.cancelRequested ? "cancelled" : "failed"
+          row.err = e.message || "上传失败"
           this.$message.error(`${row.name}: ${row.err}`)
-          if (!cancelled) fail++
-        } finally {
-          await removeJob(row.jobId).catch(() => {})
-          if (row.status === "done") row.progress = 100
-          const processed = queue.filter((r) => ["done", "skipped", "failed", "cancelled"].includes(r.status)).length
-          this.batchPercent = Math.round((processed / queue.length) * 100)
         }
+        this._saveQueue()
       }
+
+      // 用户点了停止：已上传的任务逐个通知服务端取消，未上传的直接标记停止
+      if (this.cancelRequested) {
+        for (const r of runnable) {
+          if (["failed", "cancelled"].includes(r.status)) continue
+          if (r.jobId) {
+            try { await cancelJob(r.jobId) } catch { /* 服务不可用时忽略 */ }
+          }
+          r.status = "cancelled"
+        }
+        this._saveQueue()
+      }
+
+      // 阶段二：并行轮询各任务进度，服务端实际串行编码、逐个完成
+      const watching = runnable.filter((r) => r.jobId && !["failed", "cancelled"].includes(r.status))
+      const tick = setInterval(() => {
+        const settled = runnable.filter((r) => ["done", "failed", "cancelled"].includes(r.status)).length
+        this.batchPercent = 40 + Math.round((settled / Math.max(runnable.length, 1)) * 60)
+      }, 500)
+      await Promise.all(watching.map((r) => this._watchJob(r)))
+      clearInterval(tick)
+
       this.running = false
       this.cancelRequested = false
-      if (done + skip + fail === queue.length) {
-        this.$message({ type: fail ? "warning" : "success", message: `处理完成：成功 ${done}，跳过 ${skip}，失败 ${fail}`, duration: 4000 })
+      this.batchPercent = 100
+      const done = targets.filter((r) => r.status === "done").length
+      const failed = targets.filter((r) => r.status === "failed").length
+      const cancelled = targets.filter((r) => r.status === "cancelled").length
+      if (done + skip + failed + cancelled === targets.length && targets.length) {
+        const stopText = cancelled ? `，停止 ${cancelled}` : ""
+        this.$message({ type: failed ? "warning" : "success", message: `处理完成：成功 ${done}，跳过 ${skip}，失败 ${failed}${stopText}`, duration: 4000 })
       }
-    },
-    buildPlan(row) {
-      const targetBytes = row.targetMB * 1048576
-      const totalKbps = (row.targetMB * 8192) / row.meta.duration
-      const audioKbps = row.meta.hasAudio ? (totalKbps >= 300 ? 96 : Math.max(24, Math.floor(totalKbps / 3))) : 0
-      const headroom = this.settings.precise ? 0.985 : 0.9
-      const videoKbps = Math.max(Math.round((totalKbps - audioKbps) * headroom), 60)
-      const effH = row.meta.height
-      let vf = ""
-      if (this.settings.resolutionCap && effH > this.settings.resolutionCap) {
-        vf = `scale=-2:${this.settings.resolutionCap}`
-      }
-      return { vf, audioKbps, videoKbps, undersized: videoKbps < 120, outName: `${this._baseName(row.name)}_compressed.mp4` }
-    },
-    _baseName(name) {
-      const idx = name.lastIndexOf(".")
-      return (idx > 0 ? name.slice(0, idx) : name) || "video"
-    },
-    stopCompress() {
-      this.cancelRequested = true
-      this.$message.warning("已停止，当前任务中止")
     },
     async download(row) {
       if (!row.blob && row.jobId) {
@@ -485,7 +672,16 @@ export default {
       }
       this.$message.success(`已开始下载 ${rows.length} 个文件`)
     },
-    preview(row) {
+    async preview(row) {
+      if (!row.blob && row.jobId) {
+        try {
+          row.blob = await downloadJob(row.jobId)
+        } catch {
+          this.$message.error("预览加载失败，文件可能已被清理")
+          return
+        }
+      }
+      if (!row.blob) return
       this.previewRow = row
       this.previewVisible = true
       this.previewUrl = URL.createObjectURL(row.blob)

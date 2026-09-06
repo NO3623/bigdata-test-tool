@@ -34,7 +34,9 @@ async function checkFfmpeg() {
   }
 }
 
-async function compress(file, settings, { onProgress } = {}) {
+// 上传视频并创建压缩任务，拿到 jobId 立即返回（不等待编码完成）。
+// jobId 必须第一时间交给调用方持久化，页面刷新后才能按任务记录恢复进度
+async function compressUpload(file, settings, { onSubmitted } = {}) {
   const form = new FormData()
   form.append("video", file)
   form.append("originalName", file.name)
@@ -50,22 +52,18 @@ async function compress(file, settings, { onProgress } = {}) {
   })
   const json = await r.json()
   if (!r.ok || json.error) throw new Error(json.error || "上传失败")
+  onSubmitted?.(json.jobId)
+  return { jobId: json.jobId }
+}
 
-  const { jobId } = json
+async function cancelJob(jobId) {
+  await fetch(`${BASE}/api/cancel/${jobId}`, { method: "POST" })
+}
 
-  while (true) {
-    const r = await fetchWithTimeout(`${BASE}/api/progress/${jobId}`)
-    const j = await r.json()
-    if (j.status === "done") {
-      onProgress?.(100)
-      return { jobId, outName: j.outName, outSize: j.outSize }
-    }
-    if (j.status === "failed") throw new Error(j.error || "编码失败")
-    if (typeof j.progress === "number") {
-      onProgress?.(j.progress)
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500))
-  }
+async function getProgress(jobId) {
+  const r = await fetchWithTimeout(`${BASE}/api/progress/${jobId}`)
+  const j = await r.json()
+  return j
 }
 
 async function downloadJob(jobId) {
@@ -93,4 +91,4 @@ async function probe(file) {
   return r.json()
 }
 
-export { compress, downloadJob, removeJob, checkFfmpeg, probe, listJobs, fmtBytes, isVideoType }
+export { compressUpload, cancelJob, downloadJob, removeJob, checkFfmpeg, probe, listJobs, getProgress, fmtBytes, isVideoType }
